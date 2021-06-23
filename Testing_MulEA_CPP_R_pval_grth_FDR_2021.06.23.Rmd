@@ -1,0 +1,133 @@
+---
+title: "Testing if FDR (empirically corrected *p*-value) could be smaller than the original *p*-value"
+author: "Eszter Ari"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_float: true
+    code_folding: show
+  html_notebook: 
+    number_sections: true
+    toc: yes
+    toc_float: true
+    code_folding: show
+editor_options: 
+  chunk_output_type: inline
+  markdown: 
+    wrap: 72
+---
+
+# Initialization
+
+```{r init1}
+# MulEA (by Cezary, base on CPP)
+# devtools::install_github("koralgooll/MulEA")
+library(MulEA)
+
+# CPP (by Ervin and Gergo)
+library(Rcpp)
+Sys.setenv("PKG_CXXFLAGS"="-std=c++11")
+sourceCpp("source/set-based-enrichment-test.cpp")
+source("source/set-based-enrichment-test.R")
+
+# GergoR (by Eszter and Gergo)
+source("source/Gergo_Enrichment_test_G.r") # required packages: snow, rlecuyer
+
+# Other
+library(tidyverse)
+```
+
+# Reading input files in
+
+## GMT (database, like GO)
+
+```{r input1}
+# GMT tab for MulEA
+gmt_tab <- MulEA::readGmtFileAsDataFrame("input/KEGG_filtered.gmt")
+head(gmt_tab)
+
+# GMT list for CPP and GergoR
+# GMT
+x <- readLines("input/KEGG_filtered.gmt") %>% 
+  strsplit(split = "\t")
+gmt_list <- lapply(x, tail, n=-2)
+names(gmt_list) <- lapply(x, head, n=1)
+rm(x)
+head(gmt_list)
+```
+
+## Gene set ("testData" or "select")
+
+```{r input2}
+gene_set <- readLines("input/input_select.txt")
+head(gene_set)
+```
+## Background genes (for now: all genes in the GMT)
+
+```{r input3}
+gene_bg <- unlist(gmt_list) %>% unique()
+head(gene_bg)
+```
+
+# Calculating the OverRepresentation Analysis (ORA) with 3 scripts
+
+Than ordering the result table by *p*-values
+
+## MulEA ORA
+
+```{r mulea1}
+mulea_ora_results <- MulEA::ORA(
+  gmt = gmt_tab, 
+  testData = gene_set, 
+  pool = gene_bg,
+  adjustMethod = "PT",
+  numberOfPermutations = 1000) %>% 
+  MulEA::runTest() %>% 
+  arrange(pValue)
+mulea_ora_results %>% select(ontologyId, pValue, adjustedPValue, adjustedPValueEmpirical) %>% 
+  head()
+```
+
+## CPP ORA
+```{r cpp1}
+cpp_results <- set.based.enrichment.test(steps = 1000, 
+                                         pool = gene_bg, 
+                                         select = gene_set, 
+                                         DB = gmt_list) %>% 
+  arrange(P)
+cpp_results %>% select(DB_names, P, P_adj_BH, FDR) %>% 
+  head()
+```
+
+## GergoR ORA
+```{r gergor1}
+GergoR_results <- HyperGeomFDR(steps = 1000, 
+                               pool = gene_bg, 
+                               select = gene_set, 
+                               DB = gmt_list, 
+                               nthreads = 10) %>% 
+  arrange(P)
+GergoR_results %>% select(DB_names, P, P_adj_BH, FDR) %>% 
+  head()
+```
+
+# In which cases the *p*-value > *adjustedPValueEmpirical* or *FDR*?
+
+```{r}
+# creating a list containing these cases
+P_greater_result_list <- list()
+P_greater_result_list$mulea <- mulea_ora_results %>% 
+  filter(pValue > adjustedPValueEmpirical) %>% 
+  select(ontologyId, pValue, adjustedPValue, adjustedPValueEmpirical)
+P_greater_result_list$cpp <- cpp_results %>% 
+  filter(P > FDR) %>% 
+  select(DB_names, P, P_adj_BH, FDR)
+P_greater_result_list$GergoR <- GergoR_results %>% 
+  filter(P > FDR) %>% 
+  select(DB_names, P, P_adj_BH, FDR)
+P_greater_result_list
+```
+
+
